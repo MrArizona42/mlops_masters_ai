@@ -36,7 +36,7 @@ def download_data() -> None:
     X = pd.DataFrame(wine_data['data'], columns = wine_data['feature_names'])
     y = wine_data['target']
     
-    X.to_csv('features.csv')
+    X.to_csv('/opt/airflow/dags/features.csv')
 
 task_download_data = PythonOperator(task_id="task_download_data",
                                  python_callable=download_data,
