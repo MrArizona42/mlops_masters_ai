@@ -108,8 +108,9 @@ def train_model() -> None:
     X_test_fitted = scaler.transform(X_test)
 
     # Обучить модель
-    mlflow.set_experiment(experiment_name="MedHouseExp")
-    with mlflow.start_run(run_name="my_third_run", experiment_id = "135293466297753618"):
+    experiment_id = mlflow.create_experiment("MedHouseExp")
+    mlflow.set_experiment(experiment_id)
+    with mlflow.start_run(run_name="my_third_run", experiment_id = experiment_id):
         # Обучить модель
         model = LinearRegression()
         model.fit(X_train_fitted, y_train)
