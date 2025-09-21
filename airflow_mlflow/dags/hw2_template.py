@@ -71,22 +71,8 @@ def train_and_log(name, model, X_train, y_train, X_test, y_test):
     # Получаем описание данных
     signature = infer_signature(X_test, y_pred)
 
-    # Сохраняем модель в артифакторе
-    model_info = mlflow.sklearn.log_model(
-        model,
-        artifact_path=name,
-        signature=signature,
-        input_example=X_train.sample(5),
-    )
-
-    # Сохраняем метрики модели
-    mlflow.evaluate(
-        model_info.model_uri,
-        X_test,
-        y_test.values,
-        model_type="regressor",
-        evaluators=["default"],
-    )
+    mse_val = float(MSE(y_test, y_pred))  # ensure scalar
+    mlflow.log_metric("mse", mse_val)
 
     params = model.get_params()
     for param_name, param_value in params.items():
@@ -116,16 +102,47 @@ def main():
         "RandomForestRegressor": RandomForestRegressor(),
     }
 
-    with mlflow.start_run(
-        name=PARENT_RUN_NAME, experiment_id=experiment_id, description="Parent run"
-    ) as parent_run:
+    run_ids = {}
+    model_results = {}
+
+    with mlflow.start_run(run_name=PARENT_RUN_NAME, experiment_id=experiment_id) as parent_run:
         X_train, X_test, y_train, y_test = prepare_data()
 
         for model_name, model in models.items():
-            with mlflow.start_run(
-                name=model_name, experiment_id=experiment_id, nested=True
-            ) as child_run:
+            with mlflow.start_run(run_name=model_name, nested=True) as child_run:
                 train_and_log(model_name, model, X_train, y_train, X_test, y_test)
+
+                run_ids[model_name] = child_run.info.run_id
+
+                run_data = mlflow.get_run(child_run.info.run_id).data
+                mse = run_data.metrics.get(
+                    "mean_squared_error"
+                ) or run_data.metrics.get("mse")
+
+                model_results[model_name] = mse
+
+    if model_results:
+        best_model_name = min(model_results.keys(), key=lambda k: model_results[k])
+        best_run_id = run_ids[best_model_name]
+        best_mse = model_results[best_model_name]
+    else:
+        raise ValueError("No model results found")
+
+    client = MlflowClient()
+    registered_name = f"LogReg_{MY_SURNAME}"
+    client.create_registered_model(registered_name)
+
+    client.create_model_version(
+        name=registered_name, source=f"runs:/{best_run_id}/{best_model_name}"
+    )
+
+    versions = client.get_latest_versions(registered_name)
+    client.transition_model_version_stage(
+        name=registered_name, version=versions[0].version, stage="Staging"
+    )
+
+    print(f"Best model: {best_model_name} with MSE: {best_mse}")
+    print(f"Registered as: {registered_name} v{versions[0].version} in Staging")
 
 
 if __name__ == "__main__":
