@@ -46,17 +46,30 @@ S3_KEY_PIPELINE_METRICS = f"{MY_SURNAME}/pipeline_metrics.json"
 # Утилиты: работа с S3 через BytesIO
 # -----------------
 def s3_read_csv(hook: S3Hook, bucket: str, key: str) -> pd.DataFrame:
-    buf = io.BytesIO()
-    hook.get_conn().download_fileobj(bucket, key, buf)
-    buf.seek(0)
-    return pd.read_csv(buf)
+    """Read CSV from S3 with error handling and proper resource management."""
+    try:
+        buf = io.BytesIO()
+        hook.get_conn().download_fileobj(bucket, key, buf)
+        buf.seek(0)
+        df = pd.read_csv(buf, encoding="utf-8")
+        logging.info(f"Successfully read CSV from s3://{bucket}/{key}")
+        return df
+    except Exception as e:
+        logging.error(f"Failed to read CSV from s3://{bucket}/{key}: {e}")
+        raise
 
 
 def s3_write_csv(hook: S3Hook, df: pd.DataFrame, bucket: str, key: str) -> None:
-    buf = io.BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    hook.get_conn().upload_fileobj(buf, bucket, key)
+    """Write CSV to S3 with error handling."""
+    try:
+        buf = io.BytesIO()
+        df.to_csv(buf, index=False, encoding="utf-8")
+        buf.seek(0)
+        hook.get_conn().upload_fileobj(buf, bucket, key)
+        logging.info(f"Successfully uploaded CSV to s3://{bucket}/{key}")
+    except Exception as e:
+        logging.error(f"Failed to write CSV to s3://{bucket}/{key}: {e}")
+        raise
 
 
 # -----------------
@@ -80,7 +93,14 @@ def collect_data(**context):
     Сохранить сырые данные в бакет S3.
     Залогировать сообщение об успешном сборе данных.
     """
-    ### Ваш код здесь.
+    from sklearn.datasets import load_diabetes
+
+    data = load_diabetes(as_frame=True).frame
+    logging.info(f"Loaded data shape: {data.shape}")
+
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    s3_write_csv(hook=hook, df=data, bucket=S3_BUCKET, key=f"hw1/data/raw_data.csv")
+    logging.info("Данные успешно сохранены в S3.")
 
 
 def split_and_preprocess(**context):
