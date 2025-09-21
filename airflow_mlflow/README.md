@@ -1,7 +1,7 @@
 ## HW1
 
 **Set connections in Airflow UI**\
-* S3_CONNECTION, extra: `{"AWS_ENDPOINT_URL":"https://storage.yandexcloud.net", "region_name":"ru-central1"}`
+* S3_CONNECTION, extra: `{"endpoint_url":"https://storage.yandexcloud.net", "region_name":"ru-central1"}`
 
 **Set variables in Airflow UI**
 * S3_BUCKET=
