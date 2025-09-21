@@ -70,6 +70,9 @@ def train_and_log(name, model, X_train, y_train, X_test, y_test):
 
     # Получаем описание данных
     signature = infer_signature(X_test, y_pred)
+    
+    # Сохранить модель в артифактори
+    model_info = mlflow.sklearn.log_model(model, name, signature=signature, input_example=X_test.sample(5))
 
     mse_val = float(MSE(y_test, y_pred))  # ensure scalar
     mlflow.log_metric("mse", mse_val)
@@ -90,9 +93,9 @@ def main():
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
     try:
-        experiment_id = mlflow.get_experiment_by_name(EXPERIMENT_NAME).experiment_id
-    except mlflow.exceptions.MlflowException:
         experiment_id = mlflow.create_experiment(EXPERIMENT_NAME)
+    except mlflow.exceptions.MlflowException:
+        experiment_id = mlflow.get_experiment_by_name(EXPERIMENT_NAME).experiment_id
 
     mlflow.set_experiment(experiment_id)
 
@@ -115,9 +118,7 @@ def main():
                 run_ids[model_name] = child_run.info.run_id
 
                 run_data = mlflow.get_run(child_run.info.run_id).data
-                mse = run_data.metrics.get(
-                    "mean_squared_error"
-                ) or run_data.metrics.get("mse")
+                mse = run_data.metrics.get("mean_squared_error") or run_data.metrics.get("mse")
 
                 model_results[model_name] = mse
 
@@ -129,17 +130,22 @@ def main():
         raise ValueError("No model results found")
 
     client = MlflowClient()
-    registered_name = f"LogReg_{MY_SURNAME}"
-    client.create_registered_model(registered_name)
+    registered_name = best_model_name + f"_{MY_SURNAME}"
 
-    client.create_model_version(
-        name=registered_name, source=f"runs:/{best_run_id}/{best_model_name}"
-    )
+    try:
+        client.create_registered_model(registered_name)
 
-    versions = client.get_latest_versions(registered_name)
-    client.transition_model_version_stage(
-        name=registered_name, version=versions[0].version, stage="Staging"
-    )
+        client.create_model_version(
+            name=registered_name, source=f"runs:/{best_run_id}/{best_model_name}"
+        )
+
+        versions = client.get_latest_versions(registered_name)
+        client.transition_model_version_stage(
+            name=registered_name, version=versions[0].version, stage="Staging"
+        )
+    except mlflow.exceptions.MlflowException as e:
+        print(f"Model registration failed: {e}")
+        return
 
     print(f"Best model: {best_model_name} with MSE: {best_mse}")
     print(f"Registered as: {registered_name} v{versions[0].version} in Staging")
