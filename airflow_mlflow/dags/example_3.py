@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 
 from airflow.models import DAG, Variable
 from airflow.operators.python_operator import PythonOperator
@@ -14,8 +14,14 @@ _LOG = logging.getLogger()
 _LOG.addHandler(logging.StreamHandler())
 
 FEATURES = [
-    "MedInc", "HouseAge", "AveRooms", "AveBedrms", "Population", "AveOccup",
-    "Latitude", "Longitude"
+    "MedInc",
+    "HouseAge",
+    "AveRooms",
+    "AveBedrms",
+    "Population",
+    "AveOccup",
+    "Latitude",
+    "Longitude",
 ]
 TARGET = "MedHouseVal"
 
@@ -33,6 +39,7 @@ dag = DAG(
     tags=["mlops"],
 )
 
+
 def configure_mlflow():
     for key in [
         "MLFLOW_TRACKING_URI",
@@ -43,12 +50,13 @@ def configure_mlflow():
     ]:
         os.environ[key] = Variable.get(key)
 
+
 def download_data() -> None:
     import io
+
     import pandas as pd
-    
     from sklearn import datasets
-    
+
     # Получим датасет California housing
     housing = datasets.fetch_california_housing(as_frame=True)
     # Объединим фичи и таргет в один np.array
@@ -60,32 +68,33 @@ def download_data() -> None:
     filebuffer.seek(0)
 
     # Сохранить файл в формате pkl на S3
-    BUCKET = Variable.get("BUCKET")
-    s3_hook = S3Hook("s3_connection")
+    S3_BUCKET = Variable.get("S3_BUCKET")
+    s3_hook = S3Hook("S3_CONNECTION")
     s3_hook.load_file_obj(
         file_obj=filebuffer,
         key="2025/datasets/california_housing.pkl",
-        bucket_name=BUCKET,
+        bucket_name=S3_BUCKET,
         replace=True,
     )
     _LOG.info("Data downloaded.")
-    
+
 
 def train_model() -> None:
     import mlflow
     import pandas as pd
-
     from mlflow.models import infer_signature
+    from sklearn.linear_model import LinearRegression
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import StandardScaler
-    from sklearn.linear_model import LinearRegression
 
     configure_mlflow()
-    
+
     # Использовать созданный ранее S3 connection
-    s3_hook = S3Hook("s3_connection")
-    BUCKET = Variable.get("BUCKET")
-    file = s3_hook.download_file(key=f"2025/datasets/california_housing.pkl", bucket_name=BUCKET)
+    s3_hook = S3Hook("S3_CONNECTION")
+    S3_BUCKET = Variable.get("S3_BUCKET")
+    file = s3_hook.download_file(
+        key=f"2025/datasets/california_housing.pkl", bucket_name=S3_BUCKET
+    )
     data = pd.read_pickle(file)
 
     # Сделать препроцессинг
@@ -110,16 +119,18 @@ def train_model() -> None:
     # Обучить модель
     experiment_id = mlflow.create_experiment("MedHouseExp")
     mlflow.set_experiment(experiment_id)
-    with mlflow.start_run(run_name="my_third_run", experiment_id = experiment_id):
+    with mlflow.start_run(run_name="my_third_run", experiment_id=experiment_id):
         # Обучить модель
         model = LinearRegression()
         model.fit(X_train_fitted, y_train)
         y_pred = model.predict(X_test_fitted)
-    
+
         # Получить описание данных
         signature = infer_signature(X_test_fitted, y_pred)
         # Сохранить модель в артифактори
-        model_info = mlflow.sklearn.log_model(model, "MedHouseExp_airflow", signature=signature)
+        model_info = mlflow.sklearn.log_model(
+            model, "MedHouseExp_airflow", signature=signature
+        )
         # Сохранить метрики модели
         mlflow.evaluate(
             model_info.model_uri,
@@ -129,14 +140,16 @@ def train_model() -> None:
             evaluators=["default"],
         )
 
-    
 
-task_download_data = PythonOperator(task_id="task_download_data",
-                                 python_callable=download_data,
-                                 dag=dag)
+task_download_data = PythonOperator(
+    task_id="task_download_data", python_callable=download_data, dag=dag
+)
 
-task_train_model = PythonOperator(task_id="task_train_model",
-                                 python_callable=train_model,
-                                 dag=dag, provide_context=True)
+task_train_model = PythonOperator(
+    task_id="task_train_model",
+    python_callable=train_model,
+    dag=dag,
+    provide_context=True,
+)
 
-task_download_data >> task_train_model 
+task_download_data >> task_train_model
