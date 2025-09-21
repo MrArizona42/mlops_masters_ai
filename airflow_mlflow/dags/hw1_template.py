@@ -16,6 +16,7 @@
 import io
 import logging
 import os
+import pickle
 import tempfile
 from datetime import datetime
 
@@ -40,6 +41,7 @@ MY_SURNAME = "Muradov"
 
 S3_KEY_MODEL_METRICS = f"{MY_SURNAME}/model_metrics.json"
 S3_KEY_PIPELINE_METRICS = f"{MY_SURNAME}/pipeline_metrics.json"
+S3_KEY_MODEL = f"{MY_SURNAME}/hw1/model.pkl"
 
 
 # -----------------
@@ -93,13 +95,18 @@ def collect_data(**context):
     Сохранить сырые данные в бакет S3.
     Залогировать сообщение об успешном сборе данных.
     """
+    import pandas as pd
     from sklearn.datasets import load_diabetes
 
-    data = load_diabetes(as_frame=True).frame
+    diabetes_data = load_diabetes()
+    data = pd.DataFrame(diabetes_data.data, columns=diabetes_data.feature_names)
+    data["target"] = diabetes_data.target
     logging.info(f"Loaded data shape: {data.shape}")
 
     hook = S3Hook(aws_conn_id=AWS_CONN_ID)
-    s3_write_csv(hook=hook, df=data, bucket=S3_BUCKET, key=f"hw1/data/raw_data.csv")
+    s3_write_csv(
+        hook=hook, df=data, bucket=S3_BUCKET, key=f"{MY_SURNAME}/hw1/data/raw_data.csv"
+    )
     logging.info("Данные успешно сохранены в S3.")
 
 
@@ -110,7 +117,31 @@ def split_and_preprocess(**context):
     Сохранить train/test в S3 бакет.
     Залогировать сообщение об успешном препроцессинге.
     """
-    ### Ваш код здесь.
+    from sklearn.model_selection import train_test_split
+
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    df = s3_read_csv(
+        hook=hook, bucket=S3_BUCKET, key=f"{MY_SURNAME}/hw1/data/raw_data.csv"
+    )
+
+    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+    logging.info(f"Train data shape: {train_df.shape}")
+    logging.info(f"Test data shape: {test_df.shape}")
+
+    s3_write_csv(
+        hook=hook,
+        df=train_df,
+        bucket=S3_BUCKET,
+        key=f"{MY_SURNAME}/hw1/data/train_data.csv",
+    )
+    s3_write_csv(
+        hook=hook,
+        df=test_df,
+        bucket=S3_BUCKET,
+        key=f"{MY_SURNAME}/hw1/data/test_data.csv",
+    )
+
+    logging.info("Данные успешно разделены и сохранены в S3.")
 
 
 def train_model(**context):
@@ -120,7 +151,38 @@ def train_model(**context):
     Сохранить модель в S3.
     Залогировать сообщение об успешном завершении обучения.
     """
-    ### Ваш код здесь.
+    import pickle
+
+    from sklearn.linear_model import LogisticRegression
+
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    train_df = s3_read_csv(
+        hook=hook, bucket=S3_BUCKET, key=f"{MY_SURNAME}/hw1/data/train_data.csv"
+    )
+
+    X_train = train_df.drop(columns=["target"])
+    y_train = train_df["target"]
+
+    model = LogisticRegression(max_iter=1000)
+    start_time = datetime.utcnow()
+    model.fit(X_train, y_train)
+    end_time = datetime.utcnow()
+
+    training_duration = (end_time - start_time).total_seconds()
+    logging.info(f"Model training completed in {training_duration} seconds.")
+
+    # Save model to S3
+    model_buf = io.BytesIO()
+    joblib.dump(model, model_buf)
+    model_buf.seek(0)
+
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    hook.get_conn().upload_fileobj(model_buf, S3_BUCKET, S3_KEY_MODEL)
+    logging.info(f"Model successfully saved to s3://{S3_BUCKET}/{S3_KEY_MODEL}")
+
+    context["ti"].xcom_push(key="training_start", value=start_time.isoformat())
+    context["ti"].xcom_push(key="training_end", value=end_time.isoformat())
+    context["ti"].xcom_push(key="training_duration", value=training_duration)
 
 
 def collect_metrics_model(**context):
@@ -128,7 +190,45 @@ def collect_metrics_model(**context):
     Посчитать метрики качества (например, accuracy, f1-score).
     Сохранить файл model_metrics.json в S3.
     """
-    ### Ваш код здесь.
+    import json
+    import pickle
+
+    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    test_df = s3_read_csv(
+        hook=hook, bucket=S3_BUCKET, key=f"{MY_SURNAME}/hw1/data/test_data.csv"
+    )
+
+    X_test = test_df.drop(columns=["target"])
+    y_test = test_df["target"]
+
+    # Load model from S3
+    model_buf = io.BytesIO()
+    hook.get_conn().download_fileobj(S3_BUCKET, S3_KEY_MODEL, model_buf)
+    model_buf.seek(0)
+    model = joblib.load(model_buf)
+    logging.info(f"Model successfully loaded from s3://{S3_BUCKET}/{S3_KEY_MODEL}")
+
+    y_pred = model.predict(X_test)
+
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred),
+        "f1_score": f1_score(y_test, y_pred, average="weighted"),
+        "precision": precision_score(y_test, y_pred, average="weighted"),
+        "recall": recall_score(y_test, y_pred, average="weighted"),
+    }
+
+    logging.info(f"Model metrics: {metrics}")
+
+    metrics_json = json.dumps(metrics)
+    metrics_buf = io.BytesIO(metrics_json.encode("utf-8"))
+    metrics_buf.seek(0)
+
+    hook.get_conn().upload_fileobj(metrics_buf, S3_BUCKET, S3_KEY_MODEL_METRICS)
+    logging.info(
+        f"Model metrics successfully saved to s3://{S3_BUCKET}/{S3_KEY_MODEL_METRICS}"
+    )
 
 
 def collect_metrics_pipeline(**context):
@@ -136,7 +236,34 @@ def collect_metrics_pipeline(**context):
     Сохранить метрики всего пайплайна (timestamp начала и конца, время обучения) в файл pipeline_metrics.json и выгрузить в S3.
     Залогировать сообщение об успешном завершении.
     """
-    ### Ваш код здесь.
+    import json
+
+    ti = context["ti"]
+    pipeline_start = ti.xcom_pull(key="pipeline_start", task_ids="init_pipeline")
+    training_start = ti.xcom_pull(key="training_start", task_ids="train_model")
+    training_end = ti.xcom_pull(key="training_end", task_ids="train_model")
+    training_duration = ti.xcom_pull(key="training_duration", task_ids="train_model")
+    pipeline_end = datetime.utcnow().isoformat()
+
+    pipeline_metrics = {
+        "pipeline_start": pipeline_start,
+        "pipeline_end": pipeline_end,
+        "training_start": training_start,
+        "training_end": training_end,
+        "training_duration_seconds": training_duration,
+    }
+
+    logging.info(f"Pipeline metrics: {pipeline_metrics}")
+
+    metrics_json = json.dumps(pipeline_metrics)
+    metrics_buf = io.BytesIO(metrics_json.encode("utf-8"))
+    metrics_buf.seek(0)
+
+    hook = S3Hook(aws_conn_id=AWS_CONN_ID)
+    hook.get_conn().upload_fileobj(metrics_buf, S3_BUCKET, S3_KEY_PIPELINE_METRICS)
+    logging.info(
+        f"Pipeline metrics successfully saved to s3://{S3_BUCKET}/{S3_KEY_PIPELINE_METRICS}"
+    )
 
 
 def cleanup(**context):
