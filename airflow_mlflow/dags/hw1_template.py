@@ -16,7 +16,6 @@
 import io
 import logging
 import os
-import pickle
 import tempfile
 from datetime import datetime
 
@@ -151,7 +150,6 @@ def train_model(**context):
     Сохранить модель в S3.
     Залогировать сообщение об успешном завершении обучения.
     """
-    import pickle
 
     from sklearn.linear_model import LogisticRegression
 
@@ -191,7 +189,6 @@ def collect_metrics_model(**context):
     Сохранить файл model_metrics.json в S3.
     """
     import json
-    import pickle
 
     from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
@@ -203,7 +200,6 @@ def collect_metrics_model(**context):
     X_test = test_df.drop(columns=["target"])
     y_test = test_df["target"]
 
-    # Load model from S3
     model_buf = io.BytesIO()
     hook.get_conn().download_fileobj(S3_BUCKET, S3_KEY_MODEL, model_buf)
     model_buf.seek(0)
