@@ -26,8 +26,8 @@ from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
 # -----------------
@@ -151,8 +151,6 @@ def train_model(**context):
     Залогировать сообщение об успешном завершении обучения.
     """
 
-    from sklearn.linear_model import LogisticRegression
-
     hook = S3Hook(aws_conn_id=AWS_CONN_ID)
     train_df = s3_read_csv(
         hook=hook, bucket=S3_BUCKET, key=f"{MY_SURNAME}/hw1/data/train_data.csv"
@@ -161,7 +159,7 @@ def train_model(**context):
     X_train = train_df.drop(columns=["target"])
     y_train = train_df["target"]
 
-    model = LogisticRegression(max_iter=1000)
+    model = LinearRegression()
     start_time = datetime.utcnow()
     model.fit(X_train, y_train)
     end_time = datetime.utcnow()
@@ -190,15 +188,13 @@ def collect_metrics_model(**context):
     """
     import json
 
-    from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-
     hook = S3Hook(aws_conn_id=AWS_CONN_ID)
     test_df = s3_read_csv(
         hook=hook, bucket=S3_BUCKET, key=f"{MY_SURNAME}/hw1/data/test_data.csv"
     )
-
     X_test = test_df.drop(columns=["target"])
     y_test = test_df["target"]
+    logging.info(f"Test data successfully loaded")
 
     model_buf = io.BytesIO()
     hook.get_conn().download_fileobj(S3_BUCKET, S3_KEY_MODEL, model_buf)
@@ -209,10 +205,8 @@ def collect_metrics_model(**context):
     y_pred = model.predict(X_test)
 
     metrics = {
-        "accuracy": accuracy_score(y_test, y_pred),
-        "f1_score": f1_score(y_test, y_pred, average="weighted"),
-        "precision": precision_score(y_test, y_pred, average="weighted"),
-        "recall": recall_score(y_test, y_pred, average="weighted"),
+        "mse": mean_squared_error(y_test, y_pred),
+        "r2_score": r2_score(y_test, y_pred),
     }
 
     logging.info(f"Model metrics: {metrics}")
