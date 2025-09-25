@@ -54,12 +54,7 @@ def prepare_data():
 
 def train_and_log(name, model, X_train, y_train, X_test, y_test):
     """
-    Подключитесь к MLFlow внутри докер сети
-    создайте эксперимент с названием Ivanov_I. Не забудьте проверку на уже существующий эксперимент!
-    запустите parent run с вашим ником в телеграм в качестве имени
-    Обучите 3 любые модели в цикле (child runs) для каждой:Залогируйте метрики согласно решаемой задаче с помощью MLFlow
-    Залогируйте параметры модели с помощью MLFlow
-    Сгенерируйте signature через infer_signature и залогируйте модель с input_example с помощью MLFlow
+    Функция для обучения и логирования
     """
 
     # Обучаем модель
@@ -81,9 +76,18 @@ def train_and_log(name, model, X_train, y_train, X_test, y_test):
     for param_name, param_value in params.items():
         mlflow.log_param(param_name, param_value)
 
+    return model_info.model_uri
+
 
 def main():
     """
+    Подключитесь к MLFlow внутри докер сети
+    создайте эксперимент с названием Ivanov_I. Не забудьте проверку на уже существующий эксперимент!
+    запустите parent run с вашим ником в телеграм в качестве имени
+    Обучите 3 любые модели в цикле (child runs) для каждой:Залогируйте метрики согласно решаемой задаче с помощью MLFlow
+    Залогируйте параметры модели с помощью MLFlow
+    Сгенерируйте signature через infer_signature и залогируйте модель с input_example с помощью MLFlow
+
     Получите одну основную метрику (на ваш выбор) из каждого child run.
     Выберите модель с лучшей метрикой.
     Зарегистрируйте лучшую модель с именем вида LogReg_{Surname}.
@@ -107,25 +111,28 @@ def main():
 
     run_ids = {}
     model_results = {}
+    model_uris = {}
 
     with mlflow.start_run(run_name=PARENT_RUN_NAME, experiment_id=experiment_id) as parent_run:
         X_train, X_test, y_train, y_test = prepare_data()
 
         for model_name, model in models.items():
             with mlflow.start_run(run_name=model_name, nested=True) as child_run:
-                train_and_log(model_name, model, X_train, y_train, X_test, y_test)
-
+                model_uri = train_and_log(model_name, model, X_train, y_train, X_test, y_test)  # Capture URI
+                
                 run_ids[model_name] = child_run.info.run_id
-
+                model_uris[model_name] = model_uri  # Store URI
+                
                 run_data = mlflow.get_run(child_run.info.run_id).data
-                mse = run_data.metrics.get("mean_squared_error") or run_data.metrics.get("mse")
-
+                mse = run_data.metrics.get("mse")
+                
                 model_results[model_name] = mse
 
     if model_results:
         best_model_name = min(model_results.keys(), key=lambda k: model_results[k])
         best_run_id = run_ids[best_model_name]
         best_mse = model_results[best_model_name]
+        best_model_uri = model_uris[best_model_name]
     else:
         raise ValueError("No model results found")
 
@@ -133,22 +140,38 @@ def main():
     registered_name = best_model_name + f"_{MY_SURNAME}"
 
     try:
+        # Check if the registered model exists
+        client.get_registered_model(registered_name)
+        # If it exists, create a new version
+        model_version = client.create_model_version(
+            name=registered_name, source=best_model_uri
+        )
+    except mlflow.exceptions.MlflowException:
+        # If it doesn't exist, create the model and then the version
         client.create_registered_model(registered_name)
-
-        client.create_model_version(
-            name=registered_name, source=f"runs:/{best_run_id}/{best_model_name}"
+        model_version = client.create_model_version(
+            name=registered_name, source=best_model_uri 
         )
 
-        versions = client.get_latest_versions(registered_name)
-        client.transition_model_version_stage(
-            name=registered_name, version=versions[0].version, stage="Staging"
+    # Remove "stage" tag from any existing versions in "Staging" to ensure only one model is in Staging
+    existing_staging_versions = client.search_model_versions(
+        filter_string=f"name='{registered_name}' and tags.stage='Staging'"
+    )
+    for version in existing_staging_versions:
+        client.delete_model_version_tag(
+            name=registered_name, version=version.version, key="stage"
         )
-    except mlflow.exceptions.MlflowException as e:
-        print(f"Model registration failed: {e}")
-        return
+
+    # Set the "stage" tag to "Staging" on the new version
+    client.set_model_version_tag(
+        name=registered_name, 
+        version=model_version.version, 
+        key="stage", 
+        value="Staging"
+    )
 
     print(f"Best model: {best_model_name} with MSE: {best_mse}")
-    print(f"Registered as: {registered_name} v{versions[0].version} in Staging")
+    print(f"Registered as: {registered_name} v{model_version.version} in Staging")
 
 
 if __name__ == "__main__":
